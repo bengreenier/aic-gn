@@ -63,11 +63,33 @@ action("download_aic_sdk") {
   deps = []
 }
 
+# Configuration for linker flags to handle Rust symbol conflicts
+config("aic_link_config") {
+  # Prevent Rust symbols (like rust_eh_personality) from being exported
+  # to avoid conflicts when linking with other Rust code (e.g., Electron)
+  ldflags = []
+  if (is_win) {
+    # For Windows with lld-link, we try to pass the GNU ld style flag.
+    # Electron's build invokes lld-link through clang-cl, which may accept
+    # Unix-style linker flags when passed with -Xlinker or similar.
+    # If this doesn't work, fall back to /FORCE:MULTIPLE
+    ldflags += [ "-Wl,--allow-multiple-definition" ]
+  } else {
+    # For Linux/macOS, use --exclude-libs to hide all symbols from static libs
+    # This prevents the Rust symbols in libaic.a from being exported, avoiding
+    # conflicts with other Rust code in the same binary
+    ldflags += [ "-Wl,--exclude-libs,ALL" ]
+  }
+}
+
 # Source set for the C SDK (headers and library)
 source_set("aic_c_sdk") {
   deps = [ ":download_aic_sdk" ]
   
-  public_configs = [ ":aic_c_config" ]
+  public_configs = [ 
+    ":aic_c_config",
+    ":aic_link_config",
+  ]
   
   # Include the C headers
   public_deps = [ ":aic_c_headers" ]

@@ -1,0 +1,130 @@
+# AIC SDK C++ wrapper build configuration
+# This file downloads the C SDK binaries and creates targets for linking
+
+import("//build/config/sysroot.gni")
+
+# Platform detection for AIC SDK
+if (is_win) {
+  if (target_cpu == "x64") {
+    aic_platform = "x86_64-pc-windows-msvc"
+  } else {
+    assert(false, "Unsupported Windows architecture: " + target_cpu)
+  }
+} else if (is_mac) {
+  if (target_cpu == "arm64") {
+    aic_platform = "aarch64-apple-darwin"
+  } else if (target_cpu == "x64") {
+    aic_platform = "x86_64-apple-darwin"
+  } else {
+    assert(false, "Unsupported macOS architecture: " + target_cpu)
+  }
+} else if (is_linux) {
+  if (target_cpu == "arm64") {
+    aic_platform = "aarch64-unknown-linux-gnu"
+  } else if (target_cpu == "x64") {
+    aic_platform = "x86_64-unknown-linux-gnu"
+  } else {
+    assert(false, "Unsupported Linux architecture: " + target_cpu)
+  }
+} else {
+  assert(false, "Unsupported platform")
+}
+
+# AIC SDK version
+aic_version = "0.7.0"
+
+# Output directory for downloaded SDK
+aic_sdk_dir = "$root_build_dir/aic-sdk-c"
+
+# Determine library file based on platform
+if (is_win) {
+  aic_lib_file = "$aic_sdk_dir/lib/aic.lib"
+} else if (is_mac) {
+  aic_lib_file = "$aic_sdk_dir/lib/libaic.a"
+} else if (is_linux) {
+  aic_lib_file = "$aic_sdk_dir/lib/libaic.a"
+}
+
+# Action to download and extract the C SDK
+action("download_aic_sdk") {
+  script = "//build/download_c_libaries.py"
+  
+  args = [
+    aic_version,
+    "--output", aic_sdk_dir,
+    "--platform", aic_platform,
+    "--versions-file", "//VERSIONS.txt",
+  ]
+  
+  outputs = [
+    "$aic_sdk_dir/include/aic.h",
+    aic_lib_file,
+  ]
+  
+  # Make sure the script is executable
+  deps = []
+}
+
+# Source set for the C SDK (headers and library)
+source_set("aic_c_sdk") {
+  deps = [ ":download_aic_sdk" ]
+  
+  public_configs = [ ":aic_c_config" ]
+  
+  # Include the C headers
+  public_deps = [ ":aic_c_headers" ]
+  
+  # Link against the static library
+  if (is_win) {
+    libs = [ aic_lib_file ]
+  } else {
+    libs = [ aic_lib_file ]
+  }
+  
+  # Add required system libraries
+  if (is_mac) {
+    frameworks = [ "CoreFoundation" ]
+  } else if (is_win) {
+    libs += [ "ntdll" ]
+  }
+}
+
+# Configuration for C SDK headers
+config("aic_c_config") {
+  include_dirs = [ "$aic_sdk_dir/include" ]
+}
+
+# Headers-only target for C SDK
+source_set("aic_c_headers") {
+  deps = [ ":download_aic_sdk" ]
+  
+  sources = [
+    "$aic_sdk_dir/include/aic.h",
+  ]
+  
+  public_configs = [ ":aic_c_config" ]
+}
+
+# C++ wrapper library
+source_set("aic_sdk") {
+  deps = [
+    ":aic_c_sdk",
+    ":aic_cpp_headers",
+  ]
+  
+  public_configs = [ ":aic_cpp_config" ]
+}
+
+# Configuration for C++ wrapper
+config("aic_cpp_config") {
+  include_dirs = [ "//third_party/aic-sdk-cpp/include" ]
+}
+
+# C++ headers-only target
+source_set("aic_cpp_headers") {
+  sources = [
+    "//third_party/aic-sdk-cpp/include/aic.hpp",
+  ]
+  
+  public_configs = [ ":aic_cpp_config" ]
+}

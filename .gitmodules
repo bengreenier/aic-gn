@@ -1,0 +1,6 @@
+[submodule "third_party/aic-sdk-c"]
+	path = third_party/aic-sdk-c
+	url = https://github.com/ai-coustics/aic-sdk-c
+[submodule "third_party/aic-sdk-cpp"]
+	path = third_party/aic-sdk-cpp
+	url = https://github.com/ai-coustics/aic-sdk-cpp

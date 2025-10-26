@@ -14,72 +14,97 @@ This occurs because both the aic-sdk and the host project (e.g., Electron) inclu
 
 ## Solution Implemented
 
-The `BUILD.gn` file now includes a `aic_link_config` configuration that adds platform-specific linker flags to resolve this issue:
+The build system now **renames Rust symbols** in the aic-sdk library to prevent conflicts. This is done by:
 
-### Windows (lld-link)
-```gn
-ldflags += [ "-Wl,--allow-multiple-definition" ]
-```
+1. Downloading the original aic-sdk static library
+2. Extracting all object files from the archive
+3. Using `objcopy`/`llvm-objcopy` to rename Rust symbols with an `aic_` prefix
+4. Recreating the archive with the renamed symbols
 
-This tells the linker to allow multiple definitions of the same symbol and use the first one it encounters. When Electron invokes lld-link through clang-cl, it should accept this Unix-style linker flag.
+### Symbol Renaming
 
-### Linux/macOS
-```gn
-ldflags += [ "-Wl,--exclude-libs,ALL" ]
-```
+The following symbols are renamed:
 
-This prevents symbols from static libraries (including the aic-sdk) from being exported, which avoids the conflict entirely by keeping the Rust symbols local to the library.
+| Original Symbol | Renamed Symbol |
+|----------------|----------------|
+| `rust_eh_personality` | `aic_rust_eh_personality` |
+| `rust_begin_unwind` | `aic_rust_begin_unwind` |
+| `rust_panic` | `aic_rust_panic` |
+| `rust_oom` | `aic_rust_oom` |
+| `__rust_alloc` | `aic___rust_alloc` |
+| `__rust_dealloc` | `aic___rust_dealloc` |
+| `__rust_realloc` | `aic___rust_realloc` |
+| `__rust_alloc_zeroed` | `aic___rust_alloc_zeroed` |
+| `__rust_alloc_error_handler` | `aic___rust_alloc_error_handler` |
+
+DWARF debug reference symbols (e.g., `DW.ref.rust_eh_personality`) are also renamed accordingly.
 
 ## How It Works
 
-The `aic_link_config` is added to the `public_configs` of the `aic_c_sdk` target:
+### Build Process
+
+The GN build configuration uses a two-step process:
 
 ```gn
+# Step 1: Download the SDK
+action("download_aic_sdk") {
+  # Downloads original library to lib/aic.lib or lib/libaic.a
+}
+
+# Step 2: Rename Rust symbols
+action("rename_rust_symbols") {
+  script = "build/rename_rust_symbols.py"
+  deps = [ ":download_aic_sdk" ]
+  # Creates lib/aic_renamed.lib or lib/libaic_renamed.a
+}
+
+# Step 3: Link against renamed library
 source_set("aic_c_sdk") {
-  public_configs = [ 
-    ":aic_c_config",
-    ":aic_link_config",  # <-- This propagates the linker flags
-  ]
-  # ...
+  deps = [ ":rename_rust_symbols" ]
+  libs = [ aic_lib_file_renamed ]  # Uses the renamed library
 }
 ```
 
-This ensures that any target depending on `aic_c_sdk` (including Electron's targets) will automatically receive these linker flags during the final link step.
+### Symbol Renaming Script
 
-## Alternative Solutions
+The `build/rename_rust_symbols.py` script:
+- Works on all platforms (Linux, macOS, Windows)
+- Requires `ar`/`llvm-ar` and `objcopy`/`llvm-objcopy` to be available
+- Falls back to copying the library as-is if tools are not available
+- Processes all object files in the static library archive
 
-If the primary solution doesn't work in your environment, here are alternatives:
+## Advantages Over Other Approaches
 
-### Alternative 1: Windows-specific MSVC flag
+### ✅ This Approach (Symbol Renaming)
+- **No global linker flags**: Doesn't affect other parts of the build
+- **Complete isolation**: Symbols are truly separate, not just hidden
+- **Works everywhere**: Same approach on Linux, macOS, and Windows
+- **Safe**: No risk of using the wrong implementation
 
-If the Unix-style flag doesn't work with lld-link, try using the MSVC-style equivalent:
+### ❌ Alternative: Global Linker Flags
+- Affects entire link step
+- May hide other legitimate errors
+- Platform-specific behavior
+- Risk of using wrong symbol implementation
 
-```gn
-ldflags += [ "/FORCE:MULTIPLE" ]
-```
+### ❌ Alternative: Symbol Localization
+- Symbols still present, just hidden
+- May not work consistently across all linkers
+- Still potential for conflicts in some scenarios
 
-Change line 76 in `BUILD.gn` from:
-```gn
-ldflags += [ "-Wl,--allow-multiple-definition" ]
-```
-to:
-```gn
-ldflags += [ "/FORCE:MULTIPLE" ]
-```
+## Requirements
 
-### Alternative 2: Use dynamic linking
+The symbol renaming requires these tools to be available:
+- **Linux/macOS**: `ar` and `objcopy` (or `llvm-ar` and `llvm-objcopy`)
+- **Windows**: `llvm-ar` and `llvm-objcopy` (part of LLVM/Clang installation)
 
-If possible, modify the aic-sdk build to produce a dynamic library (`.dll`/`.dylib`/`.so`) instead of a static library. This would naturally isolate the symbols.
+These tools are typically available in:
+- Chromium/Electron build environments (via depot_tools)
+- Standard Linux development packages
+- Xcode Command Line Tools on macOS
+- LLVM installation on Windows
 
-### Alternative 3: Symbol renaming
-
-Use `objcopy` or similar tools to rename conflicting symbols in the aic library before linking:
-
-```bash
-objcopy --redefine-sym rust_eh_personality=aic_rust_eh_personality libaic.a libaic_renamed.a
-```
-
-This is more complex but provides complete isolation.
+If the tools are not available, the script will fall back to using the original library (which may cause symbol conflicts).
 
 ## Testing
 
@@ -89,16 +114,67 @@ To verify the fix works in your Electron build:
 2. Build a target that links against both Electron's Rust code and the aic-sdk
 3. The `rust_eh_personality` duplicate symbol error should no longer occur
 
+### Manual Testing
+
+You can manually test the symbol renaming:
+
+```bash
+# Download the SDK
+python3 build/download_c_libaries.py 0.7.0 \
+  --output /tmp/aic_test \
+  --platform x86_64-unknown-linux-gnu \
+  --versions-file VERSIONS.txt
+
+# Rename symbols
+python3 build/rename_rust_symbols.py \
+  /tmp/aic_test/lib/libaic.a \
+  /tmp/libaic_renamed.a \
+  --prefix aic_
+
+# Verify symbols were renamed
+nm /tmp/libaic_renamed.a | grep rust_eh_personality
+# Should show: aic_rust_eh_personality (not rust_eh_personality)
+```
+
 ## Technical Details
 
-- **`rust_eh_personality`**: This is Rust's exception handling personality function, part of the Rust panic handling mechanism
-- **Why it's duplicated**: Both aic-sdk and Electron link against the Rust standard library (`libstd`)
-- **Why the solution works**: 
-  - On Linux/macOS: `--exclude-libs` makes symbols local, preventing export
-  - On Windows: `--allow-multiple-definition` permits duplicates and uses the first definition
+### Why Symbol Conflicts Occur
 
-## Additional Notes
+- **`rust_eh_personality`**: Rust's exception handling personality function
+- **Why it's duplicated**: Both aic-sdk and Electron link against Rust's `libstd`
+- **Why it's a problem**: Linkers don't allow multiple definitions of the same symbol
 
-- The linker flags are only applied when building executables, not intermediate libraries
-- The flags are propagated through GN's `public_configs` mechanism
-- This solution is compatible with GN-based build systems like Chromium/Electron
+### Why Symbol Renaming Works
+
+- Creates completely separate symbol namespaces
+- `aic_rust_eh_personality` and `rust_eh_personality` are different symbols
+- Each Rust component uses its own runtime symbols
+- No ambiguity for the linker
+
+### Archive Processing
+
+Static libraries (`.a` and `.lib` files) are archives containing multiple object files:
+1. Extract: `ar x library.a` extracts all `.o` files
+2. Rename: `objcopy --redefine-sym old=new file.o` renames symbols
+3. Recreate: `ar rcs new_library.a *.o` creates new archive
+
+## Troubleshooting
+
+### Error: "objcopy/llvm-objcopy not found"
+
+The build tools are not in your PATH. Solutions:
+- **Electron builds**: Should already have these in depot_tools
+- **Linux**: Install `binutils` package
+- **macOS**: Install Xcode Command Line Tools
+- **Windows**: Install LLVM or use Visual Studio's tools
+
+### Symbols still conflicting
+
+If you still see conflicts:
+1. Verify the renamed library is being used (check build output)
+2. Check that the symbol is actually renamed: `nm library.a | grep rust_eh_personality`
+3. Ensure the build is using the `aic_c_sdk` target (not accidentally using original library)
+
+### Build performance
+
+The symbol renaming adds ~10-30 seconds to the build process (one-time cost during SDK download). This is a small price for avoiding symbol conflicts.

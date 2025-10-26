@@ -35,13 +35,16 @@ aic_version = "0.7.0"
 aic_gn_dir = rebase_path("./", root_build_dir)
 aic_versions_file = "$aic_gn_dir/VERSIONS.txt"
 
-# Determine library file based on platform
+# Determine library file paths based on platform
 if (is_win) {
-  aic_lib_file = "$target_gen_dir/lib/aic.lib"
+  aic_lib_file_original = "$target_gen_dir/lib/aic.lib"
+  aic_lib_file_renamed = "$target_gen_dir/lib/aic_renamed.lib"
 } else if (is_mac) {
-  aic_lib_file = "$target_gen_dir/lib/libaic.a"
+  aic_lib_file_original = "$target_gen_dir/lib/libaic.a"
+  aic_lib_file_renamed = "$target_gen_dir/lib/libaic_renamed.a"
 } else if (is_linux) {
-  aic_lib_file = "$target_gen_dir/lib/libaic.a"
+  aic_lib_file_original = "$target_gen_dir/lib/libaic.a"
+  aic_lib_file_renamed = "$target_gen_dir/lib/libaic_renamed.a"
 }
 
 # Action to download and extract the C SDK
@@ -56,28 +59,46 @@ action("download_aic_sdk") {
   ]
   
   outputs = [
-    aic_lib_file,
+    aic_lib_file_original,
   ]
   
   # Make sure the script is executable
   deps = []
 }
 
+# Action to rename Rust symbols in the library to prevent conflicts
+# This renames symbols like "rust_eh_personality" to "aic_rust_eh_personality"
+action("rename_rust_symbols") {
+  script = "build/rename_rust_symbols.py"
+  
+  deps = [ ":download_aic_sdk" ]
+  
+  args = [
+    rebase_path(aic_lib_file_original, root_build_dir),
+    rebase_path(aic_lib_file_renamed, root_build_dir),
+    "--prefix", "aic_",
+  ]
+  
+  inputs = [
+    aic_lib_file_original,
+  ]
+  
+  outputs = [
+    aic_lib_file_renamed,
+  ]
+}
+
 # Source set for the C SDK (headers and library)
 source_set("aic_c_sdk") {
-  deps = [ ":download_aic_sdk" ]
+  deps = [ ":rename_rust_symbols" ]
   
   public_configs = [ ":aic_c_config" ]
   
   # Include the C headers
   public_deps = [ ":aic_c_headers" ]
   
-  # Link against the static library
-  if (is_win) {
-    libs = [ aic_lib_file ]
-  } else {
-    libs = [ aic_lib_file ]
-  }
+  # Link against the renamed static library (with prefixed Rust symbols)
+  libs = [ aic_lib_file_renamed ]
   
   # Add required system libraries
   if (is_mac) {
